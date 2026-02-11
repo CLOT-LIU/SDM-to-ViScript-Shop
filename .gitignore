@@ -1,0 +1,19 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 过程文件
+1.过程/
+
+# 输出文件
+2.输出/
+
+# 报告文件
+3.报告/
+
+# 其他可能需要排除的文件
+ViScriptShop/
+*.pyz
+*.zip
+*.tar.gz
