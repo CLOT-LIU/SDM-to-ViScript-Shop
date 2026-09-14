@@ -3,14 +3,18 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# 过程文件
-1.过程/
+# 中间产物
+output/
 
-# 输出文件
-2.输出/
+# 最终成品（含 .shopproj 与报告 txt）
+最终输出/
 
-# 报告文件
-3.报告/
+# 输入的 sdmshop.snbt（体积较大，不入库）
+input/sdmshop.snbt
+
+# 日志与调试文件
+*.log
+debug.log
 
 # 其他可能需要排除的文件
 ViScriptShop/

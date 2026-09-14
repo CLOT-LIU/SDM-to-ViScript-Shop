@@ -12,11 +12,13 @@ import os
 import sys
 import struct
 import zipfile
+import tempfile
+import shutil
 from io import BytesIO
 from pathlib import Path
 from datetime import datetime
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, font as tkfont
 
 # ==================== 导入原有功能 ====================
 
@@ -1228,7 +1230,7 @@ def parse_snbt_by_category(filepath):
 
 def save_mod_comparison(source_mods, target_mods, source_dir, target_dir):
     """保存模组对比结果到文件，并检测同名不同作者的情况"""
-    filename = os.path.join("3.报告", "模组对比.txt")
+    filename = os.path.join("最终输出", "模组对比.txt")
     
     # 获取 mod_id 集合
     source_ids = set(source_mods.keys())
@@ -1263,7 +1265,7 @@ def save_mod_comparison(source_mods, target_mods, source_dir, target_dir):
         f.write("-"*50 + "\n")
         f.write(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"原目录: {source_dir}\n")
-        f.write(f"目标目录: {target_dir}\n")
+        f.write(f"目标模组目录: {target_dir}\n")
         f.write("-"*50 + "\n\n")
         
         # 关键信息概览
@@ -1301,7 +1303,7 @@ def save_mod_comparison(source_mods, target_mods, source_dir, target_dir):
 
 def save_missing_items(missing_items_by_category, total_missing):
     """保存缺失的物品信息到单独的文件"""
-    filename = os.path.join("3.报告", "缺失物品.txt")
+    filename = os.path.join("最终输出", "缺失物品.txt")
     
     with open(filename, 'w', encoding='utf-8') as f:
         f.write("缺失物品\n")
@@ -1392,9 +1394,8 @@ def create_category(name, icon_id, merchants_list):
 
 
 def get_process_dir():
-    """获取过程文件夹的路径"""
-    # 创建1.过程文件夹
-    process_dir = "1.过程"
+    """获取中间产物文件夹的路径"""
+    process_dir = "output"
     os.makedirs(process_dir, exist_ok=True)
     
     return process_dir
@@ -1402,23 +1403,178 @@ def get_process_dir():
 
 def ensure_directories():
     """确保必要的文件夹结构存在"""
-    # 创建1.过程文件夹
-    os.makedirs("1.过程", exist_ok=True)
-    # 创建2.输出文件夹
-    os.makedirs("2.输出", exist_ok=True)
-    # 创建3.报告文件夹
-    os.makedirs("3.报告", exist_ok=True)
+    # 输入：sdmshop.snbt 来源
+    os.makedirs("input", exist_ok=True)
+    # 中间产物：解析后的 JSON 等
+    os.makedirs("output", exist_ok=True)
+    # 最终成品：可直接使用的 .shopproj (NBT) 及报告 txt
+    os.makedirs("最终输出", exist_ok=True)
 
 
 # ==================== GUI 界面 ====================
 
+def extract_sdmshop_snbt_from_zip(zip_path):
+    """从整合包压缩包中提取 sdmshop.snbt 到 input/ 目录。
+
+    优先匹配 overrides/config/SDMShop/sdmshop.snbt，
+    否则查找压缩包中任意以 sdmshop.snbt 结尾的文件。
+    返回写入后的路径，未找到或出错时返回 None。
+    """
+    target = os.path.join("input", "sdmshop.snbt")
+    os.makedirs("input", exist_ok=True)
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as z:
+            # 用统一的小写正斜杠路径做匹配，兼容不同分隔符与大小写
+            normalized = {n.lower().replace('\\', '/'): n for n in z.namelist()}
+
+            target_name = None
+            # 1) 优先匹配标准路径 overrides/config/SDMShop/sdmshop.snbt
+            for key, real in normalized.items():
+                if key.endswith('sdmshop.snbt') and key.startswith('overrides/config/'):
+                    target_name = real
+                    break
+            # 2) 兜底：任意以 sdmshop.snbt 结尾的文件
+            if target_name is None:
+                for key, real in normalized.items():
+                    if key.endswith('sdmshop.snbt'):
+                        target_name = real
+                        break
+            if target_name is None:
+                return None
+
+            data = z.read(target_name)
+            with open(target, 'wb') as f:
+                f.write(data)
+            return target
+    except Exception:
+        return None
+
+
+def extract_sdmshop_snbt_from_dir(dir_path):
+    """从原整合包目录中自动查找并复制 sdmshop.snbt 到 input/ 目录。
+
+    按优先级搜索：
+      1. <dir>/config/SDMShop/sdmshop.snbt
+      2. <dir>/overrides/config/SDMShop/sdmshop.snbt
+      3. 递归搜索目录下任意 sdmshop.snbt
+    返回写入后的路径，未找到时返回 None。
+    """
+    target = os.path.join("input", "sdmshop.snbt")
+    os.makedirs("input", exist_ok=True)
+    candidates = [
+        os.path.join(dir_path, "config", "SDMShop", "sdmshop.snbt"),
+        os.path.join(dir_path, "overrides", "config", "SDMShop", "sdmshop.snbt"),
+    ]
+    for c in candidates:
+        if os.path.isfile(c):
+            shutil.copy2(c, target)
+            return target
+    # 兜底：递归搜索
+    for root, _dirs, files in os.walk(dir_path):
+        if "sdmshop.snbt" in files:
+            found = os.path.join(root, "sdmshop.snbt")
+            shutil.copy2(found, target)
+            return target
+    return None
+
+
+def format_output_dirs():
+    """格式化输出目录：清空 input/、output/、最终输出/ 的内容。"""
+    for d in ("input", "output", "最终输出"):
+        if os.path.isdir(d):
+            shutil.rmtree(d, ignore_errors=True)
+        os.makedirs(d, exist_ok=True)
+
+
+def get_mods_from_modrinth_zip(zip_path, real_mods_dir=None):
+    """从 Modrinth 格式整合包压缩包中获取完整模组列表。
+
+    Modrinth 整合包通过根目录的 modrinth.index.json 列出所有需安装的模组
+    （大部分 jar 由启动器运行时下载，不会打包在 overrides/mods 中）。
+    本函数读取该清单，返回 {mod_id: {mod_id, author, version, name, jar_name}}。
+
+    - 若 real_mods_dir 提供（通常是已解压的 overrides/mods），其中存在的 jar
+      会通过 get_mod_info_from_jar 真实解析 mod_id；
+    - 清单中其余 jar 则从文件名推断 mod_id（与原工具回退逻辑一致）。
+    """
+    import json as _json
+    installed_mods = {
+        "minecraft": {"mod_id": "minecraft", "author": "Mojang", "version": "1.20.1",
+                      "name": "Minecraft", "jar_name": "minecraft.jar"}
+    }
+
+    # 1) 真实解析 overrides/mods 中已打包的 jar，建立 jar_name -> mod_info 映射
+    real_by_jar = {}
+    if real_mods_dir and os.path.isdir(real_mods_dir):
+        for jar_file in Path(real_mods_dir).glob("*.jar"):
+            info = get_mod_info_from_jar(str(jar_file))
+            real_by_jar[jar_file.name] = info
+
+    manifest_jar_names = set()
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as z:
+            if 'modrinth.index.json' not in z.namelist():
+                # 无清单时，仅返回 overrides/mods 中已打包的模组
+                for info in real_by_jar.values():
+                    installed_mods.setdefault(info["mod_id"], info)
+                return installed_mods
+            data = _json.loads(z.read('modrinth.index.json').decode('utf-8'))
+    except Exception:
+        for info in real_by_jar.values():
+            installed_mods.setdefault(info["mod_id"], info)
+        return installed_mods
+
+    # 2) 遍历清单中 mods/*.jar 条目
+    for f in data.get('files', []):
+        path = f.get('path', '').replace('\\', '/')
+        if not path.lower().startswith('mods/') or not path.lower().endswith('.jar'):
+            continue
+        jar_name = path.split('/')[-1]
+        manifest_jar_names.add(jar_name)
+
+        # 优先用真实解析结果
+        if jar_name in real_by_jar:
+            info = real_by_jar[jar_name]
+        else:
+            # 从文件名推断 mod_id（与 get_mod_info_from_jar 的回退逻辑一致）
+            stem = Path(jar_name).stem
+            mod_id = stem.split('-')[0].split('_')[0].lower()
+            info = {
+                "mod_id": mod_id,
+                "author": "未知",
+                "version": "未知",
+                "name": stem,
+                "jar_name": jar_name,
+            }
+
+        mod_id = info["mod_id"]
+        if mod_id not in installed_mods:
+            installed_mods[mod_id] = info
+
+    # 3) 把 overrides/mods 中不在清单里的额外 jar 也加入（作者自制/第三方模组）
+    for jar_name, info in real_by_jar.items():
+        if jar_name not in manifest_jar_names:
+            installed_mods.setdefault(info["mod_id"], info)
+
+    return installed_mods
+
+
 class ViScriptShopToolkitGUI:
     """ViScript Shop 工具箱 GUI 界面"""
+    
+    # 全局字体配置
+    FONT_FAMILY = "SimHei"
+    FONT_SIZE = 10
+    FONT = (FONT_FAMILY, FONT_SIZE)
+    FONT_BOLD = (FONT_FAMILY, FONT_SIZE, "bold")
+    FONT_TITLE = (FONT_FAMILY, 11, "bold")
+    FONT_LOG = ("SimHei", FONT_SIZE)  # 日志也用黑体
     
     def __init__(self, root):
         self.root = root
         self.root.title("SDM 商店转 ViScriptShop 工具")
-        self.root.geometry("800x600")
+        self.root.geometry("860x680")
+        self.root.minsize(760, 560)
         self.root.resizable(True, True)
         
         # 确保文件夹结构存在
@@ -1429,67 +1585,152 @@ class ViScriptShopToolkitGUI:
         self.MODS_CACHE = {}  # {dir_path: (mods_dict, timestamp)}
         self.ITEMS_CACHE = {}  # {dir_path: (available_items, mod_items_map, timestamp)}
         
+        # 配置全局样式
+        self.setup_style()
+        
         # 创建主框架
-        self.main_frame = ttk.Frame(self.root, padding="10")
+        self.main_frame = ttk.Frame(self.root, padding="16")
         self.main_frame.pack(fill=tk.BOTH, expand=True)
         
         # 创建 SDM 转 ViScriptShop 界面
         self.create_sdm_interface()
+    
+    def setup_style(self):
+        """配置全局样式：统一字体、主题、控件外观"""
+        style = ttk.Style()
+        # 优先使用原生现代主题
+        for theme in ("vista", "clam", "alt", "default"):
+            if theme in style.theme_names():
+                style.theme_use(theme)
+                break
         
+        # 统一字体
+        default_font = tkfont.nametofont("TkDefaultFont")
+        default_font.configure(family=self.FONT_FAMILY, size=self.FONT_SIZE)
+        text_font = tkfont.nametofont("TkTextFont")
+        text_font.configure(family=self.FONT_FAMILY, size=self.FONT_SIZE)
+        menu_font = tkfont.nametofont("TkMenuFont")
+        menu_font.configure(family=self.FONT_FAMILY, size=self.FONT_SIZE)
+        
+        # ttk 控件样式
+        style.configure(".", font=self.FONT)
+        style.configure("TFrame", background="#f5f6f8")
+        style.configure("TLabel", font=self.FONT, background="#f5f6f8")
+        style.configure("TEntry", font=self.FONT, padding=4)
+        style.configure("TButton", font=self.FONT, padding=(14, 6))
+        style.configure("TRadiobutton", font=self.FONT, background="#f5f6f8")
+        
+        # LabelFrame 标题样式
+        style.configure("TLabelframe", background="#f5f6f8", borderwidth=1)
+        style.configure("TLabelframe.Label", font=self.FONT_BOLD, foreground="#2c3e50")
+        
+        # 主操作按钮（开始转换）
+        style.configure("Primary.TButton",
+                        font=self.FONT_BOLD,
+                        padding=(20, 8),
+                        foreground="white")
+        style.map("Primary.TButton",
+                  background=[("active", "#2980b9"), ("!disabled", "#3498db")],
+                  foreground=[("disabled", "#bdc3c7")])
+        
+        # 浏览按钮
+        style.configure("Browse.TButton", padding=(12, 4))
+        
+        # 窗口背景
+        self.root.configure(bg="#f5f6f8")
+    
     def create_sdm_interface(self):
         """创建 SDM 商店转 ViScriptShop 界面"""
-        # 创建原模组目录选择
-        source_frame = ttk.LabelFrame(self.main_frame, text="原整合包目录", padding="10")
-        source_frame.pack(fill=tk.X, pady=5)
+        # 标题
+        title_label = ttk.Label(self.main_frame, text="SDM 商店 → ViScriptShop 转换工具",
+                                font=self.FONT_TITLE, foreground="#2c3e50")
+        title_label.pack(anchor="w", pady=(0, 12))
         
-        self.source_dir_var = tk.StringVar()
-        source_entry = ttk.Entry(source_frame, textvariable=self.source_dir_var, width=60)
-        source_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        # 创建原整合包来源选择（目录 / 压缩包 二选一）
+        source_frame = ttk.LabelFrame(self.main_frame, text="  原整合包来源（二选一）  ", padding="12")
+        source_frame.pack(fill=tk.X, pady=(0, 8))
         
-        source_button = ttk.Button(source_frame, text="浏览", command=self.browse_source_dir)
-        source_button.pack(side=tk.RIGHT, padx=5)
+        # 来源类型单选
+        type_frame = ttk.Frame(source_frame)
+        type_frame.pack(fill=tk.X, pady=(0, 8))
+        self.source_type_var = tk.StringVar(value="dir")
+        ttk.Radiobutton(type_frame, text="整合包目录", variable=self.source_type_var,
+                        value="dir", command=self.on_source_type_change).pack(side=tk.LEFT, padx=(0, 20))
+        ttk.Radiobutton(type_frame, text="整合包压缩包 (.zip)", variable=self.source_type_var,
+                        value="zip", command=self.on_source_type_change).pack(side=tk.LEFT)
+        
+        # 共享的路径输入框
+        path_row = ttk.Frame(source_frame)
+        path_row.pack(fill=tk.X)
+        self.source_path_var = tk.StringVar()
+        self.source_entry = ttk.Entry(path_row, textvariable=self.source_path_var)
+        self.source_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        
+        self.source_browse_button = ttk.Button(path_row, text="浏览", style="Browse.TButton",
+                                               command=self.browse_source)
+        self.source_browse_button.pack(side=tk.RIGHT)
         
         # 创建目标模组目录选择
-        target_frame = ttk.LabelFrame(self.main_frame, text="目标整合包目录", padding="10")
-        target_frame.pack(fill=tk.X, pady=5)
+        target_frame = ttk.LabelFrame(self.main_frame, text="  目标模组目录（扫描 mods 校验物品是否存在）  ", padding="12")
+        target_frame.pack(fill=tk.X, pady=(0, 8))
         
+        target_row = ttk.Frame(target_frame)
+        target_row.pack(fill=tk.X)
         self.target_dir_var = tk.StringVar()
-        target_entry = ttk.Entry(target_frame, textvariable=self.target_dir_var, width=60)
-        target_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        target_entry = ttk.Entry(target_row, textvariable=self.target_dir_var)
+        target_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
         
-        target_button = ttk.Button(target_frame, text="浏览", command=self.browse_target_dir)
-        target_button.pack(side=tk.RIGHT, padx=5)
+        target_button = ttk.Button(target_row, text="浏览", style="Browse.TButton",
+                                   command=self.browse_target_dir)
+        target_button.pack(side=tk.RIGHT)
         
         # 创建执行按钮
         button_frame = ttk.Frame(self.main_frame)
-        button_frame.pack(fill=tk.X, pady=10)
+        button_frame.pack(fill=tk.X, pady=12)
         
-        execute_button = ttk.Button(button_frame, text="开始转换", command=self.execute_sdm_conversion)
-        execute_button.pack(side=tk.LEFT, padx=5)
+        execute_button = tk.Button(button_frame, text="▶  开始转换", font=self.FONT_BOLD,
+                                   bg="#3498db", fg="white", activebackground="#2980b9",
+                                   activeforeground="white", relief=tk.FLAT, padx=20, pady=8,
+                                   cursor="hand2", command=self.execute_sdm_conversion)
+        execute_button.pack(side=tk.LEFT)
         
         # 创建日志文本框
-        log_frame = ttk.LabelFrame(self.main_frame, text="转换日志", padding="10")
-        log_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        log_frame = ttk.LabelFrame(self.main_frame, text="  转换日志  ", padding="8")
+        log_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 0))
         
-        self.sdm_log_text = tk.Text(log_frame, height=15, wrap=tk.WORD)
-        self.sdm_log_text.pack(fill=tk.BOTH, expand=True)
+        log_container = ttk.Frame(log_frame)
+        log_container.pack(fill=tk.BOTH, expand=True)
         
-        scrollbar = ttk.Scrollbar(self.sdm_log_text, command=self.sdm_log_text.yview)
+        self.sdm_log_text = tk.Text(log_container, wrap=tk.WORD, font=self.FONT_LOG,
+                                    bg="#1e1e2e", fg="#e0e0e0", insertbackground="#e0e0e0",
+                                    relief=tk.FLAT, padx=10, pady=8, borderwidth=0)
+        self.sdm_log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        scrollbar = ttk.Scrollbar(log_container, orient=tk.VERTICAL, command=self.sdm_log_text.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.sdm_log_text.config(yscrollcommand=scrollbar.set)
     
-    def browse_source_dir(self):
-        """浏览原整合包目录"""
-        dir_path = filedialog.askdirectory(
-            title="选择原整合包目录 (sdmshop.snbt 来源)"
-        )
-        if dir_path:
-            self.source_dir_var.set(dir_path)
+    def on_source_type_change(self):
+        """切换原整合包来源类型时清空已填路径"""
+        self.source_path_var.set("")
+    
+    def browse_source(self):
+        """根据来源类型浏览原整合包目录或压缩包"""
+        source_type = self.source_type_var.get()
+        if source_type == "dir":
+            path = filedialog.askdirectory(title="选择原整合包目录（自动提取 sdmshop.snbt）")
+        else:
+            path = filedialog.askopenfilename(
+                title="选择原整合包压缩包 (自动提取 sdmshop.snbt 与模组)",
+                filetypes=[("整合包压缩包", "*.zip"), ("所有文件", "*.*")]
+            )
+        if path:
+            self.source_path_var.set(path)
     
     def browse_target_dir(self):
-        """浏览目标整合包目录"""
+        """浏览目标模组目录"""
         dir_path = filedialog.askdirectory(
-            title="选择目标整合包目录 (要生成 ViScriptShop 商店文件的整合包)"
+            title="选择目标模组目录（读取其中 mods 文件夹，用于校验商店物品是否存在）"
         )
         if dir_path:
             self.target_dir_var.set(dir_path)
@@ -1498,16 +1739,18 @@ class ViScriptShopToolkitGUI:
         """执行 SDM 商店转 ViScriptShop 转换"""
         import time
         
-        # 获取目录路径
-        source_base_dir = self.source_dir_var.get()
+        # 获取来源类型与路径
+        source_type = self.source_type_var.get()
+        source_path = self.source_path_var.get()
         target_base_dir = self.target_dir_var.get()
         
-        if not source_base_dir:
-            messagebox.showerror("错误", "请选择原整合包目录")
+        if not source_path:
+            label = "原整合包目录" if source_type == "dir" else "原整合包压缩包"
+            messagebox.showerror("错误", f"请选择{label}")
             return
         
         if not target_base_dir:
-            messagebox.showerror("错误", "请选择目标整合包目录")
+            messagebox.showerror("错误", "请选择目标模组目录")
             return
         
         # 自动寻找 mods 文件夹
@@ -1516,6 +1759,35 @@ class ViScriptShopToolkitGUI:
             if os.path.exists(mods_path) and os.path.isdir(mods_path):
                 return mods_path
             return base_dir
+        
+        # 解析原整合包来源
+        source_base_dir = source_path
+        tmp_dir = None
+        if source_type == "zip":
+            # 压缩包模式：解压 mods 到临时目录，并提取 sdmshop.snbt
+            if not os.path.isfile(source_path):
+                messagebox.showerror("错误", f"压缩包不存在: {source_path}")
+                return
+            tmp_dir = tempfile.mkdtemp(prefix="sdm_src_")
+            try:
+                with zipfile.ZipFile(source_path, 'r') as z:
+                    mods_extracted = 0
+                    for name in z.namelist():
+                        norm = name.replace('\\', '/')
+                        lower = norm.lower()
+                        # 解压 overrides/mods/ 下的 jar（保持 mods 子目录结构）
+                        if lower.startswith('overrides/mods/') and lower.endswith('.jar'):
+                            rel = norm[len('overrides/'):]  # mods/xxx.jar
+                            out_path = os.path.join(tmp_dir, rel)
+                            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                            with open(out_path, 'wb') as f:
+                                f.write(z.read(name))
+                            mods_extracted += 1
+                source_base_dir = tmp_dir
+            except Exception as e:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                messagebox.showerror("错误", f"解压压缩包失败: {e}")
+                return
         
         source_dir = find_mods_folder(source_base_dir)
         target_dir = find_mods_folder(target_base_dir)
@@ -1528,11 +1800,46 @@ class ViScriptShopToolkitGUI:
             # 清空日志
             self.sdm_log_text.delete(1.0, tk.END)
             
-            # 确保 sdmshop.snbt 文件存在
-            snbt_file = "sdmshop.snbt"
-            if not os.path.exists(snbt_file):
-                messagebox.showerror("错误", f"找不到 sdmshop.snbt 文件，请确保该文件在当前目录")
+            # 转换前格式化输出目录（二次确认，提醒用户备份）
+            confirm = messagebox.askyesno(
+                "格式化输出目录",
+                "即将清空以下目录中的所有文件：\n"
+                "  • input/       （sdmshop.snbt 来源）\n"
+                "  • output/      （中间产物）\n"
+                "  • 最终输出/    （成品 .shopproj 及报告 txt）\n\n"
+                "如已有需要保留的文件，请先备份。\n"
+                "确认要清空并开始转换吗？",
+                icon=messagebox.WARNING
+            )
+            if not confirm:
+                self.sdm_log_text.insert(tk.END, "用户取消操作（未格式化输出目录）。\n")
                 return
+            format_output_dirs()
+            self.sdm_log_text.insert(tk.END, "✓ 已格式化输出目录（input/、output/、最终输出/）\n\n")
+            self.sdm_log_text.see(tk.END)
+            self.root.update()
+            
+            # 从原整合包自动提取 sdmshop.snbt 到 input/
+            snbt_file = os.path.join("input", "sdmshop.snbt")
+            if source_type == "zip":
+                self.sdm_log_text.insert(tk.END, f"正在从压缩包提取 sdmshop.snbt: {source_path}\n")
+                self.sdm_log_text.see(tk.END)
+                self.root.update()
+                extracted = extract_sdmshop_snbt_from_zip(source_path)
+                if not extracted:
+                    messagebox.showerror("错误", "压缩包中未找到 sdmshop.snbt，请检查路径（应为 overrides/config/SDMShop/sdmshop.snbt）")
+                    return
+            else:
+                self.sdm_log_text.insert(tk.END, f"正在从目录提取 sdmshop.snbt: {source_path}\n")
+                self.sdm_log_text.see(tk.END)
+                self.root.update()
+                extracted = extract_sdmshop_snbt_from_dir(source_path)
+                if not extracted:
+                    messagebox.showerror("错误", "目录中未找到 sdmshop.snbt（应为 config/SDMShop/sdmshop.snbt）")
+                    return
+            self.sdm_log_text.insert(tk.END, f"   已提取到 {snbt_file}\n\n")
+            self.sdm_log_text.see(tk.END)
+            self.root.update()
             
             # 开始转换过程
             self.sdm_log_text.insert(tk.END, "开始执行 SDM 商店转 ViScriptShop 转换...\n")
@@ -1545,21 +1852,38 @@ class ViScriptShopToolkitGUI:
             self.sdm_log_text.see(tk.END)
             self.root.update()
             
-            # 1. 扫描原模组目录
-            self.sdm_log_text.insert(tk.END, "1. 扫描原模组目录...\n")
-            self.sdm_log_text.see(tk.END)
-            self.root.update()
-            if source_dir in self.MODS_CACHE:
-                source_mods = self.MODS_CACHE[source_dir][0]
-                self.sdm_log_text.insert(tk.END, f"   使用缓存的扫描结果: {len(source_mods)} 个模组/库\n")
+            # 1. 扫描原模组
+            if source_type == "zip":
+                self.sdm_log_text.insert(tk.END, "1. 从压缩包清单(modrinth.index.json)解析原模组...\n")
                 self.sdm_log_text.see(tk.END)
                 self.root.update()
+                if source_path in self.MODS_CACHE:
+                    source_mods = self.MODS_CACHE[source_path][0]
+                    self.sdm_log_text.insert(tk.END, f"   使用缓存的扫描结果: {len(source_mods)} 个模组/库\n")
+                    self.sdm_log_text.see(tk.END)
+                    self.root.update()
+                else:
+                    real_mods_dir = os.path.join(tmp_dir, "mods") if tmp_dir else None
+                    source_mods = get_mods_from_modrinth_zip(source_path, real_mods_dir=real_mods_dir)
+                    self.MODS_CACHE[source_path] = (source_mods, time.time())
+                    self.sdm_log_text.insert(tk.END, f"   清单中发现 {len(source_mods)} 个模组/库（含 overrides/mods 中已打包的真实解析）\n")
+                    self.sdm_log_text.see(tk.END)
+                    self.root.update()
             else:
-                source_mods = get_installed_mods(source_dir)
-                self.MODS_CACHE[source_dir] = (source_mods, time.time())
-                self.sdm_log_text.insert(tk.END, f"   原模组目录发现 {len(source_mods)} 个模组/库\n")
+                self.sdm_log_text.insert(tk.END, "1. 扫描原模组目录...\n")
                 self.sdm_log_text.see(tk.END)
                 self.root.update()
+                if source_dir in self.MODS_CACHE:
+                    source_mods = self.MODS_CACHE[source_dir][0]
+                    self.sdm_log_text.insert(tk.END, f"   使用缓存的扫描结果: {len(source_mods)} 个模组/库\n")
+                    self.sdm_log_text.see(tk.END)
+                    self.root.update()
+                else:
+                    source_mods = get_installed_mods(source_dir)
+                    self.MODS_CACHE[source_dir] = (source_mods, time.time())
+                    self.sdm_log_text.insert(tk.END, f"   原模组目录发现 {len(source_mods)} 个模组/库\n")
+                    self.sdm_log_text.see(tk.END)
+                    self.root.update()
             
             # 2. 扫描目标模组目录
             self.sdm_log_text.insert(tk.END, "\n2. 扫描目标模组目录...\n")
@@ -1573,7 +1897,7 @@ class ViScriptShopToolkitGUI:
             else:
                 target_mods = get_installed_mods(target_dir)
                 self.MODS_CACHE[target_dir] = (target_mods, time.time())
-                self.sdm_log_text.insert(tk.END, f"   目标目录发现 {len(target_mods)} 个模组/库\n")
+                self.sdm_log_text.insert(tk.END, f"   目标模组目录发现 {len(target_mods)} 个模组/库\n")
                 self.sdm_log_text.see(tk.END)
                 self.root.update()
             
@@ -1617,7 +1941,7 @@ class ViScriptShopToolkitGUI:
             self.sdm_log_text.insert(tk.END, "\n5. 解析 sdmshop.snbt...\n")
             self.sdm_log_text.see(tk.END)
             self.root.update()
-            categories_data = parse_snbt_by_category("sdmshop.snbt")
+            categories_data = parse_snbt_by_category(snbt_file)
             self.sdm_log_text.insert(tk.END, f"   发现 {len(categories_data)} 个原有分类\n")
             self.sdm_log_text.see(tk.END)
             self.root.update()
@@ -1803,7 +2127,7 @@ class ViScriptShopToolkitGUI:
             self.sdm_log_text.insert(tk.END, "\n10. 转换为 NBT 格式...\n")
             self.sdm_log_text.see(tk.END)
             self.root.update()
-            nbt_file = os.path.join("2.输出", "extracted_shop_by_category.shopproj")
+            nbt_file = os.path.join("最终输出", "extracted_shop_by_category.shopproj")
             try:
                 json_to_nbt(json_file, nbt_file, compress=False)
                 self.sdm_log_text.insert(tk.END, f"   ✓ NBT 文件已生成: {nbt_file}\n")
@@ -1863,6 +2187,10 @@ class ViScriptShopToolkitGUI:
             import traceback
             traceback.print_exc()
             messagebox.showerror("错误", error_msg)
+        finally:
+            # 清理压缩包模式产生的临时目录
+            if tmp_dir is not None:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def main():
